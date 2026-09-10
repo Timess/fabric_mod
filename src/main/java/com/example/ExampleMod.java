@@ -8,20 +8,23 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.kyori.adventure.platform.modcommon.MinecraftServerAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
-import net.kyori.adventure.text.format.TextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.kyori.adventure.translation.GlobalTranslator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.NonNullList;
 import net.minecraft.core.component.DataComponents;
-import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.resources.Identifier;
 
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Container;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.alchemy.PotionContents;
@@ -29,11 +32,15 @@ import net.minecraft.world.item.component.OminousBottleAmplifier;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.loot.LootParams;
+import net.minecraft.world.level.storage.loot.LootTable;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
 import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -166,12 +173,10 @@ public class ExampleMod implements ModInitializer {
         ServerLevel level = levels.get(worldindex);
 
         BlockPos pos = new BlockPos(x, y, z);
-        // NMS 直取 BlockEntity，避开 Bukkit getState() 的深拷贝开销
         BlockEntity blockEntity = level.getBlockEntity(pos);
 
-
-        if (!(blockEntity instanceof RandomizableContainerBlockEntity lootable)) {
-            Component title = Component.text("坐标：", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z, NamedTextColor.YELLOW)).append(Component.text(" 不是 战利品 方块！", NamedTextColor.GRAY));
+        if (!(blockEntity instanceof Container container)) {
+            Component title = Component.text("坐标：", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z, NamedTextColor.YELLOW)).append(Component.text(" 不是 容器 方块！", NamedTextColor.GRAY));
             sendMessage(title, null);
             return;
         }
@@ -180,18 +185,26 @@ public class ExampleMod implements ModInitializer {
         String blockTranslationKey = blockEntity.getBlockState().getBlock().getDescriptionId();
         Component containerTypeComponent = Component.translatable(blockTranslationKey).color(NamedTextColor.WHITE);
 
-        Component title = Component.text("开始检查位于 ", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z, NamedTextColor.YELLOW)).append(Component.text(" 的 ", NamedTextColor.GRAY)).append(containerTypeComponent).append(Component.text(" 内容...", NamedTextColor.GRAY));
+        Component title = Component.text("开始检查坐标：", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z, NamedTextColor.YELLOW)).append(Component.text(" 的 ", NamedTextColor.GRAY)).append(containerTypeComponent).append(Component.text(" 内容...", NamedTextColor.GRAY));
         sendMessage(title, null);
-
-        List<ItemStack> generatedItems = predictLootTable(level, pos, lootable);
 
         gsb.setLength(0);
 
-        if (generatedItems != null) {
-            for (ItemStack stack : generatedItems) {
-                printItemStack(stack, gsb);
+        inspectInventory(container, null);
+        inspectInventory(container, gsb);
+
+        if (blockEntity instanceof RandomizableContainerBlockEntity lootable) {
+            List<ItemStack> generatedItems = unpackFromExactDummy(lootable);
+            if (generatedItems == null || generatedItems.isEmpty()) {
+
+            } else {
+                for (ItemStack stack : generatedItems) {
+                    printItemStack(stack, null);
+                    printItemStack(stack, gsb);
+                }
             }
         }
+
         String s = gsb.toString();
 
         if (s.isEmpty()) {
@@ -429,40 +442,51 @@ public class ExampleMod implements ModInitializer {
         for (BlockPos pos : blocks) {
             BlockEntity blockEntity = level.getBlockEntity(pos);
 
-            if (!(blockEntity instanceof RandomizableContainerBlockEntity lootable)) {
-                Component title = Component.text("坐标：", NamedTextColor.GRAY).append(Component.text(pos.getX() + ", " + pos.getY() + ", " + pos.getZ(), NamedTextColor.YELLOW)).append(Component.text(" 不是 战利品 方块！", NamedTextColor.GRAY));
-                sendMessage(title, null);
+            if (!(blockEntity instanceof Container container)) {
                 continue;
             }
 
-            List<ItemStack> generatedItems = predictLootTable(level, pos, lootable);
+            boolean founded = false;
 
-            // 判定容器内部（包括嵌套潜影盒/收纳袋）是否含有附魔金苹果
-            if (generatedItems != null) {
+            if (blockEntity instanceof RandomizableContainerBlockEntity lootable) {
+                List<ItemStack> generatedItems = unpackFromExactDummy(lootable);
 
-                boolean founded = false;
-                for (ItemStack stack : generatedItems) {
-                    if (stack.is(Items.ENCHANTED_GOLDEN_APPLE)) {
-                        founded = true;
-                        break;
+                // 判定容器内部（包括嵌套潜影盒/收纳袋）是否含有附魔金苹果
+                if (generatedItems == null || generatedItems.isEmpty()) {
+
+                } else {
+
+                    for (ItemStack stack : generatedItems) {
+                        if (stack.is(Items.ENCHANTED_GOLDEN_APPLE)) {
+                            founded = true;
+                            break;
+                        }
                     }
                 }
+            }
 
-                if (founded) {
-
-                    int currentOffset = bufferOffset;
-                    bufferOffset += 12;
-
-                    buffer.putInt(currentOffset, pos.getX());
-                    buffer.putInt(currentOffset + 4, pos.getY());
-                    buffer.putInt(currentOffset + 8, pos.getZ());
-
-                    matchCount++;
-                    int count = matchCount;
-
-                    Component matchTitle = Component.text("[" + count + "] 附魔金苹果：", NamedTextColor.GOLD).append(Component.text(pos.getX() + ", " + pos.getY() + ", " + pos.getZ(), NamedTextColor.WHITE));
-                    sendMessage(matchTitle, null);
+            for (int slot = 0; slot < container.getContainerSize(); slot++) {
+                ItemStack item = container.getItem(slot);
+                if (item.is(Items.ENCHANTED_GOLDEN_APPLE)) {
+                    founded = true;
+                    break;
                 }
+            }
+
+            if (founded) {
+
+                int currentOffset = bufferOffset;
+                bufferOffset += 12;
+
+                buffer.putInt(currentOffset, pos.getX());
+                buffer.putInt(currentOffset + 4, pos.getY());
+                buffer.putInt(currentOffset + 8, pos.getZ());
+
+                matchCount++;
+                int count = matchCount;
+
+                Component matchTitle = Component.text("[" + count + "] 附魔金苹果：", NamedTextColor.GOLD).append(Component.text(pos.getX() + ", " + pos.getY() + ", " + pos.getZ(), NamedTextColor.WHITE));
+                sendMessage(matchTitle, null);
             }
 
         }
@@ -476,7 +500,90 @@ public class ExampleMod implements ModInitializer {
         sendMessage(resultTitle, null);
     }
 
-    public List<ItemStack> predictLootTable(ServerLevel level, BlockPos pos, RandomizableContainerBlockEntity lootable) {
+    public static class DummyContainer extends RandomizableContainerBlockEntity {
+        private NonNullList<ItemStack> items;
+
+        /**
+         * 动态克隆指定容器方块特征的构造函数
+         *
+         * @param type  目标方块实体的 BlockEntityType (如木桶、陷阱箱、潜影盒等)
+         * @param pos   目标坐标
+         * @param state 目标方块的状态 (BlockState)
+         * @param size  目标容器的实际槽位数
+         */
+        public DummyContainer(BlockEntityType<?> type, BlockPos pos, BlockState state, int size) {
+            super(type, pos, state);
+            this.items = NonNullList.withSize(size, ItemStack.EMPTY);
+        }
+
+        @Override
+        protected NonNullList<ItemStack> getItems() {
+            return this.items;
+        }
+
+        @Override
+        protected void setItems(NonNullList<ItemStack> items) {
+            this.items = items;
+        }
+
+        @Override
+        public int getContainerSize() {
+            return this.items.size();
+        }
+
+        @Override
+        protected net.minecraft.network.chat.Component getDefaultName() {
+            return net.minecraft.network.chat.Component.literal("Dummy Container");
+        }
+
+        @Override
+        protected AbstractContainerMenu createMenu(int syncId, Inventory playerInventory) {
+            return null;
+        }
+    }
+
+    public List<ItemStack> unpackFromExactDummy(RandomizableContainerBlockEntity realContainer) {
+
+        if (realContainer.getLevel() == null || realContainer.getLevel().isClientSide()) {
+            return Collections.emptyList();
+        }
+
+        ServerLevel level = (ServerLevel) realContainer.getLevel();
+
+        ResourceKey<LootTable> lootTableKey = realContainer.getLootTable();
+        long seed = realContainer.getLootTableSeed();
+
+        if (lootTableKey == null) {
+            return Collections.emptyList();
+        }
+
+        // 2. 构造一模一样的 DummyContainer（完全匹配其 BlockEntityType、Pos、BlockState 与 Size）
+        DummyContainer dummy = new DummyContainer(realContainer.getType(),           // 方块实体类型（如 Barrel, ShulkerBox 等）
+                realContainer.getBlockPos(),       // 坐标
+                realContainer.getBlockState(),     // 方块状态（包含朝向、半边等属性）
+                realContainer.getContainerSize()   // 容量大小
+        );
+
+        // 绑定世界并写入 LootTable 参数
+        dummy.setLevel(level);
+        dummy.setLootTable(lootTableKey, seed);
+
+        // 3. 执行解包
+        dummy.unpackLootTable(null);
+
+        // 4. 收集战利品
+        List<ItemStack> resultItems = new ArrayList<>();
+        for (int i = 0; i < dummy.getContainerSize(); i++) {
+            ItemStack stack = dummy.getItem(i);
+            if (!stack.isEmpty()) {
+                resultItems.add(stack.copy());
+            }
+        }
+
+        return resultItems;
+    }
+
+    public static List<ItemStack> predictLootTable(ServerLevel level, BlockPos pos, RandomizableContainerBlockEntity lootable) {
         if (lootable.getLootTable() == null) return null;
 
         // 1. 获取服务器注册的战利品表（适配 1.20.5+ NMS API，旧版本可改用 level.getServer().getLootData()）
@@ -489,6 +596,7 @@ public class ExampleMod implements ModInitializer {
 
         return lootTable.getRandomItems(params, lootable.getLootTableSeed());
     }
+
 
     public void onTick(MinecraftServer server) {
 
