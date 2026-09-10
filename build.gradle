@@ -4,6 +4,8 @@ plugins {
 }
 
 repositories {
+
+	mavenCentral()
 	// Add repositories to retrieve artifacts from in here.
 	// You should only use this when depending on other mods because
 	// Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
@@ -15,9 +17,8 @@ loom {
 	splitEnvironmentSourceSets()
 
 	mods {
-		"modid" {
+		"chestinspect" {
 			sourceSet sourceSets.main
-			sourceSet sourceSets.client
 		}
 	}
 }
@@ -29,6 +30,9 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	implementation "net.kyori:adventure-platform-fabric:6.9.0"
+	implementation "org.jetbrains:annotations:+"
 }
 
 processResources {
@@ -41,7 +45,7 @@ processResources {
 }
 
 tasks.withType(JavaCompile).configureEach {
-	it.options.release = 25
+	it.options.release = 26
 }
 
 java {
@@ -50,8 +54,10 @@ java {
 	// If you remove this line, sources will not be generated.
 	withSourcesJar()
 
-	sourceCompatibility = JavaVersion.VERSION_25
-	targetCompatibility = JavaVersion.VERSION_25
+	sourceCompatibility = JavaVersion.VERSION_26
+	targetCompatibility = JavaVersion.VERSION_26
+
+	toolchain.languageVersion.set(JavaLanguageVersion.of(26))
 }
 
 jar {
