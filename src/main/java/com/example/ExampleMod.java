@@ -1,5 +1,7 @@
 package com.example;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import net.fabricmc.api.ModInitializer;
 
@@ -9,7 +11,6 @@ import net.kyori.adventure.platform.modcommon.MinecraftServerAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import net.kyori.adventure.translation.GlobalTranslator;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.NonNullList;
@@ -68,22 +69,6 @@ public class ExampleMod implements ModInitializer {
 
     private volatile MinecraftServerAudiences adventure;
 
-    private void setupServerTranslations() {
-        InputStream is = getClass().getClassLoader().getResourceAsStream("zh_cn.json");
-
-        if (is == null) {
-            adventure.console().sendMessage(Component.text("未在 jar 包根目录找到 zh_cn.json，控制台将显示默认英文名称。", NamedTextColor.RED));
-            return;
-        }
-
-        // 创建并加载自定义翻译器，注册到 GlobalTranslator
-        ChineseTranslator translator = new ChineseTranslator();
-        translator.load(is);
-
-        GlobalTranslator.translator().addSource(translator);
-        adventure.console().sendMessage(Component.text("成功加载服务端中文语言包！", NamedTextColor.GREEN));
-    }
-
     public static int[] lastcheckxyzw = new int[4];
     public static MappedByteBuffer buffer;
 
@@ -126,7 +111,6 @@ public class ExampleMod implements ModInitializer {
             this.adventure = MinecraftServerAudiences.of(server);
 
             try {
-                setupServerTranslations();
                 memoryinit();
 
                 ServerTickEvents.END_SERVER_TICK.register(this::onTick);
@@ -182,8 +166,8 @@ public class ExampleMod implements ModInitializer {
         }
 
         // 获取容器翻译 Key (如 block.minecraft.chest)
-        String blockTranslationKey = blockEntity.getBlockState().getBlock().getDescriptionId();
-        Component containerTypeComponent = Component.translatable(blockTranslationKey).color(NamedTextColor.WHITE);
+        String blockTranslationKey = blockEntity.getBlockState().getBlock().getName().getString();
+        Component containerTypeComponent = Component.text(blockTranslationKey).color(NamedTextColor.WHITE);
 
         Component title = Component.text("开始检查坐标：", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z, NamedTextColor.YELLOW)).append(Component.text(" 的 ", NamedTextColor.GRAY)).append(containerTypeComponent).append(Component.text(" 内容...", NamedTextColor.GRAY));
         sendMessage(title, null);
@@ -243,14 +227,7 @@ public class ExampleMod implements ModInitializer {
         Component message = Component.text("", NamedTextColor.GRAY);
 
         // 1. 识别物品中文名称
-        Component itemNameComponent;
-        if (item.has(DataComponents.CUSTOM_NAME)) {
-            // 自定义显示名称
-            itemNameComponent = Component.text(item.getHoverName().getString());
-        } else {
-            // 原生未命名物品，使用描述 ID 翻译
-            itemNameComponent = Component.translatable(item.getItem().getDescriptionId());
-        }
+        Component itemNameComponent = Component.text(item.getHoverName().getString());
 
         Component amountComponent = Component.text(" x" + item.getCount(), NamedTextColor.DARK_GRAY);
         sendMessage(message.append(itemNameComponent).append(amountComponent), sb);
@@ -262,8 +239,8 @@ public class ExampleMod implements ModInitializer {
                 int level = effect.getAmplifier() + 1;
 
                 Component effectPrefix = Component.text("  - 效果: ", NamedTextColor.AQUA);
-                Component effectName = Component.translatable(effect.getEffect().value().getDescriptionId());
-                Component effectLevel = Component.text(" " + toRoman(level), NamedTextColor.AQUA);
+                Component effectName = Component.text(effect.getEffect().value().getDisplayName().getString());
+                Component effectLevel = Component.text(" ").append(Component.translatable("enchantment.level." + level));
 
                 String durationStr = formatDuration(effect.getDuration());
                 Component durationComp = durationStr.isEmpty() ? Component.empty() : Component.text(" (" + durationStr + ")", NamedTextColor.GRAY);
@@ -278,7 +255,7 @@ public class ExampleMod implements ModInitializer {
 
             Component effectPrefix = Component.text("  - 效果: ", NamedTextColor.AQUA);
             Component effectName = Component.translatable("effect.minecraft.bad_omen"); // 不祥之兆翻译 Key
-            Component effectLevel = Component.text(" " + toRoman(level), NamedTextColor.AQUA);
+            Component effectLevel = Component.text(" ").append(Component.translatable("enchantment.level." + level));
 
             // 原版不祥之瓶饮用后固定给予 100 分钟 (120000 ticks) 不祥之兆效果
             String durationStr = formatDuration(120000);
@@ -310,19 +287,7 @@ public class ExampleMod implements ModInitializer {
                 int level = entry.getValue();
 
                 Component enchantPrefix = Component.text("  - 附魔: ", NamedTextColor.AQUA);
-                Component enchantName = Component.text("未知");
-                if (enchant.value().description().getContents() instanceof TranslatableContents translatable) {
-                    String key = translatable.getKey(); // 获取 "enchantment.minecraft.sharpness"
-                    enchantName = Component.translatable(key);
-                }
-
-                Component enchantLevel = Component.text("", NamedTextColor.AQUA);
-
-                if (level != 1 || enchant.value().getMaxLevel() != 1) {
-                    enchantLevel = Component.text(" ").append(Component.translatable("enchantment.level." + level));
-                }
-
-                sendMessage(enchantPrefix.append(enchantName).append(enchantLevel), sb);
+                sendMessage(enchantPrefix.append(Component.text(Enchantment.getFullname(enchant, level).getString())), sb);
             }
         }
     }
@@ -343,28 +308,12 @@ public class ExampleMod implements ModInitializer {
      * 统一消息发送：如果是控制台，通过 NMS 系统消息发送
      */
     public void sendMessage(Component component, StringBuilder sb) {
-        // 在服务端使用中文 Locale 渲染组件
-        Component rendered = GlobalTranslator.render(component, Locale.CHINA);
 
         if (sb != null) {
-            sb.append(PlainTextComponentSerializer.plainText().serialize(rendered)).append("\n");
+            sb.append(PlainTextComponentSerializer.plainText().serialize(component)).append("\n");
         } else {
-            adventure.console().sendMessage(rendered);
+            adventure.console().sendMessage(component);
         }
-    }
-
-    private String toRoman(int number) {
-        if (number <= 0) return String.valueOf(number);
-        int[] values = {1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1};
-        String[] symbols = {"M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"};
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < values.length; i++) {
-            while (number >= values[i]) {
-                number -= values[i];
-                sb.append(symbols[i]);
-            }
-        }
-        return sb.toString();
     }
 
     private String formatDuration(int ticks) {
