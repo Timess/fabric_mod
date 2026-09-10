@@ -31,6 +31,7 @@ import net.minecraft.world.item.alchemy.PotionContents;
 import net.minecraft.world.item.component.OminousBottleAmplifier;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
@@ -160,23 +161,22 @@ public class ExampleMod implements ModInitializer {
         lastcheckxyzw[2] = z;
         lastcheckxyzw[3] = worldindex;
 
-        List<ServerLevel> levels = new ArrayList<>();
-        for (ServerLevel level : server.getAllLevels()) {
-            levels.add(level);
+        ServerLevel level;
+        if (worldindex == 0) {
+            level = server.getLevel(Level.OVERWORLD);
+        } else if (worldindex == 1) {
+            level = server.getLevel(Level.NETHER);
+        } else if (worldindex == 2) {
+            level = server.getLevel(Level.END);
+        } else {
+            return;
         }
-
-        if (worldindex >= levels.size() || worldindex < 0) {
-            worldindex = 0;
-        }
-
-        if (levels.isEmpty()) return;
-        ServerLevel level = levels.get(worldindex);
 
         BlockPos pos = new BlockPos(x, y, z);
         BlockEntity blockEntity = level.getBlockEntity(pos);
 
         if (!(blockEntity instanceof Container container)) {
-            Component title = Component.text("坐标：", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z, NamedTextColor.YELLOW)).append(Component.text(" 不是 容器 方块！", NamedTextColor.GRAY));
+            Component title = Component.text("坐标：", NamedTextColor.GRAY).append(Component.text(x + ", " + y + ", " + z + ", " + worldindex, NamedTextColor.YELLOW)).append(Component.text(" 不是 容器 方块！", NamedTextColor.GRAY));
             sendMessage(title, null);
             return;
         }
@@ -261,9 +261,9 @@ public class ExampleMod implements ModInitializer {
             for (MobEffectInstance effect : potionContents.getAllEffects()) {
                 int level = effect.getAmplifier() + 1;
 
-                Component effectPrefix = Component.text("  - 效果: ", NamedTextColor.LIGHT_PURPLE);
+                Component effectPrefix = Component.text("  - 效果: ", NamedTextColor.AQUA);
                 Component effectName = Component.translatable(effect.getEffect().value().getDescriptionId());
-                Component effectLevel = Component.text(" " + toRoman(level), NamedTextColor.LIGHT_PURPLE);
+                Component effectLevel = Component.text(" " + toRoman(level), NamedTextColor.AQUA);
 
                 String durationStr = formatDuration(effect.getDuration());
                 Component durationComp = durationStr.isEmpty() ? Component.empty() : Component.text(" (" + durationStr + ")", NamedTextColor.GRAY);
@@ -276,9 +276,9 @@ public class ExampleMod implements ModInitializer {
             OminousBottleAmplifier amplifier = item.get(DataComponents.OMINOUS_BOTTLE_AMPLIFIER);
             int level = (amplifier != null ? amplifier.value() : 0) + 1; // NMS 中的 amplifier 从 0 开始 (0 为 I 级，1 为 II 级...)
 
-            Component effectPrefix = Component.text("  - 效果: ", NamedTextColor.LIGHT_PURPLE);
+            Component effectPrefix = Component.text("  - 效果: ", NamedTextColor.AQUA);
             Component effectName = Component.translatable("effect.minecraft.bad_omen"); // 不祥之兆翻译 Key
-            Component effectLevel = Component.text(" " + toRoman(level), NamedTextColor.LIGHT_PURPLE);
+            Component effectLevel = Component.text(" " + toRoman(level), NamedTextColor.AQUA);
 
             // 原版不祥之瓶饮用后固定给予 100 分钟 (120000 ticks) 不祥之兆效果
             String durationStr = formatDuration(120000);
@@ -406,20 +406,20 @@ public class ExampleMod implements ModInitializer {
         lastcenter[1] = centerCZ;
         lastcenter[2] = worldindex;
 
-        Component startTitle = Component.text("开始扫描：", NamedTextColor.GRAY).append(Component.text(centerCX + ", " + centerCZ + "(" + blocksize + ")", NamedTextColor.WHITE));
-        sendMessage(startTitle, null);
+        ServerLevel level;
 
-        if (worldindex >= 3) worldindex = 0;
-
-        int finalWorldindex = worldindex;
-
-        List<ServerLevel> levels = new ArrayList<>();
-        for (ServerLevel level : server.getAllLevels()) {
-            levels.add(level);
+        if (worldindex == 0) {
+            level = server.getLevel(Level.OVERWORLD);
+        } else if (worldindex == 1) {
+            level = server.getLevel(Level.NETHER);
+        } else if (worldindex == 2) {
+            level = server.getLevel(Level.END);
+        } else {
+            return;
         }
 
-        if (finalWorldindex >= levels.size() || finalWorldindex < 0) return;
-        ServerLevel level = levels.get(finalWorldindex);
+        Component startTitle = Component.text("开始扫描：", NamedTextColor.GRAY).append(Component.text(centerCX + ", " + centerCZ + "(" + blocksize + ")", NamedTextColor.WHITE));
+        sendMessage(startTitle, null);
 
         List<BlockPos> blocks = new ArrayList<>();
 
@@ -493,7 +493,7 @@ public class ExampleMod implements ModInitializer {
 
 
         int finalCount = matchCount;
-        buffer.putInt(0x30000, finalWorldindex);
+        buffer.putInt(0x30000, worldindex);
         buffer.putInt(0x30004, finalCount);
 
         Component resultTitle = Component.text("扫描结束，共找到附魔金苹果：", NamedTextColor.GRAY).append(Component.text(finalCount, NamedTextColor.GOLD));
