@@ -2,19 +2,30 @@ package com.example;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.datafixers.util.Pair;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
+import it.unimi.dsi.fastutil.objects.ObjectArraySet;
 import net.fabricmc.api.ModInitializer;
 
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.kyori.adventure.platform.modcommon.MinecraftServerAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Holder;
-import net.minecraft.core.NonNullList;
+import net.minecraft.ChatFormatting;
+import net.minecraft.SharedConstants;
+import net.minecraft.commands.CommandSource;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
+import net.minecraft.core.*;
 import net.minecraft.core.component.DataComponents;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.resources.Identifier;
 
@@ -22,8 +33,10 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.tags.StructureTags;
 import net.minecraft.world.Container;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.decoration.ItemFrame;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.item.ItemStack;
@@ -34,16 +47,28 @@ import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.ItemEnchantments;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.block.entity.BaseContainerBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.levelgen.RandomState;
+import net.minecraft.world.level.levelgen.structure.*;
+import net.minecraft.world.level.levelgen.structure.pieces.StructurePieceSerializationContext;
+import net.minecraft.world.level.levelgen.structure.placement.ConcentricRingsStructurePlacement;
+import net.minecraft.world.level.levelgen.structure.placement.RandomSpreadStructurePlacement;
+import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
 import net.minecraft.world.level.storage.loot.LootParams;
 import net.minecraft.world.level.storage.loot.LootTable;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -128,6 +153,29 @@ public class ExampleMod implements ModInitializer {
             }
 
         });
+
+        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+            dispatcher.register(Commands.literal("findelytra")
+                    // 参数：中心点坐标
+                    .then(Commands.argument("center", BlockPosArgument.blockPos()).then(Commands.argument("radius", IntegerArgumentType.integer(1, Integer.MAX_VALUE)).executes(context -> {
+                        CommandSourceStack source = context.getSource();
+                        BlockPos center = BlockPosArgument.getBlockPos(context, "center");
+                        int radius = IntegerArgumentType.getInteger(context, "radius");
+
+                        int state = buffer.getInt(0x40000);
+                        if (state == 0) {
+                            buffer.putInt(0x40004, 2);
+                            buffer.putInt(0x40008, center.getX());
+                            buffer.putInt(0x4000C, center.getY());
+                            buffer.putInt(0x40010, center.getZ());
+                            buffer.putInt(0x40014, radius);
+                            buffer.putInt(0x40000, 1);
+                        }
+
+                        return 1;
+                    }))));
+        });
+
         ServerLifecycleEvents.SERVER_STOPPED.register(server -> this.adventure = null);
 
     }
@@ -136,6 +184,303 @@ public class ExampleMod implements ModInitializer {
         return Identifier.fromNamespaceAndPath(MOD_ID, path);
     }
 
+    /**
+     * 单个末地城的完整扫描结果
+     */
+    private static class ScanResult {
+        BlockPos pos = null;
+        boolean hasShipPiece = false;
+        BlockPos shipCenter = null;
+        double distance;
+
+        ScanResult(BlockPos pos, double distance) {
+            this.pos = pos;
+            this.distance = distance;
+        }
+    }
+
+    public boolean elytrafinding = false;
+
+    private void findElytra(MinecraftServer server) {
+
+        if (elytrafinding) {
+            buffer.putInt(0x40000, 2);
+            return;
+        }
+
+        int state = buffer.getInt(0x40000);
+
+        if (state != 1) return;
+
+        int worldindex = buffer.getInt(0x40004);
+
+        int x = buffer.getInt(0x40008);
+        int y = buffer.getInt(0x4000C);
+        int z = buffer.getInt(0x40010);
+        int radius = buffer.getInt(0x40014);
+
+        if (x == 0 && z == 0) return;
+        if (radius == 0) return;
+
+        ServerLevel level;
+        if (worldindex == 0) {
+            level = null;
+        } else if (worldindex == 1) {
+            level = null;
+        } else if (worldindex == 2) {
+            level = server.getLevel(Level.END);
+        } else {
+            return;
+        }
+
+        if (level == null) return;
+
+        var structureRegistry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
+        var endCityStructure = structureRegistry.getOrThrow(BuiltinStructures.END_CITY);
+        HolderSet<Structure> holderSet = HolderSet.direct(endCityStructure);
+
+        StructurePieceSerializationContext context = StructurePieceSerializationContext.fromLevel(level);
+
+        elytrafinding = true;
+        buffer.putInt(0x40000, 2);
+
+        BlockPos center = new BlockPos(x, y, z);
+
+        sendMessage(Component.text("开始扫描末地城... 中心: [%d, %d, %d] 半径: %d".formatted(center.getX(), center.getY(), center.getZ(), radius), NamedTextColor.AQUA), null);
+
+        long startTime = System.currentTimeMillis();
+
+        var structuresfind = findMapStructures(level, holderSet, center, radius, false);
+
+
+        try {
+
+            int totalWithElytra = 0;
+            List<ScanResult> results = new ArrayList<>();
+
+            for (var res : structuresfind) {
+                double dist = Math.sqrt(center.distSqr(new BlockPos(res.getFirst().getX(), res.getFirst().getY(), res.getFirst().getZ())));
+
+                ScanResult result = new ScanResult(res.getFirst(), dist);
+
+                // 分析结构组件, 检查是否有末地船部分
+                boolean hasShipPiece = false;
+                BlockPos shipPieceCenter = null;
+
+                for (var piece : res.getSecond().value().getPieces()) {
+                    CompoundTag tag = piece.createTag(context);
+                    String templateName = tag.getString("Template").orElse("NULL");
+
+                    BoundingBox pieceBB = piece.getBoundingBox();
+                    // 末地船的结构组件名称通常包含 "Ship"
+                    if (templateName.toLowerCase().contains("ship")) {
+                        hasShipPiece = true;
+                        shipPieceCenter = new BlockPos((pieceBB.minX() + pieceBB.maxX()) / 2, (pieceBB.minY() + pieceBB.maxY()) / 2, (pieceBB.minZ() + pieceBB.maxZ()) / 2);
+                    }
+                }
+
+                result.hasShipPiece = hasShipPiece;
+                result.shipCenter = shipPieceCenter;
+
+                if (hasShipPiece) {
+                    totalWithElytra++;
+                }
+
+                results.add(result);
+            }
+
+            long elapsed = System.currentTimeMillis() - startTime;
+
+            sendMessage(Component.text("════════ 末地城鞘翅扫描报告 ════════", NamedTextColor.GOLD), null);
+            sendMessage(Component.text("扫描耗时: %dms | 扫描范围: %d | 发现末地城: %d座".formatted(elapsed, radius, structuresfind.size()), NamedTextColor.GRAY), null);
+
+            if (!structuresfind.isEmpty()) {
+                // 按距离排序
+                results.sort(Comparator.comparingDouble(r -> r.distance));
+
+                int index = 0;
+                for (ScanResult result : results) {
+
+                    if (result.hasShipPiece) {
+                        index++;
+
+                        // 末地城标题行 (可点击传送)
+                        Component cityHeader = Component.text("  #%d │ ".formatted(index), NamedTextColor.WHITE);
+
+                        Component posText = Component.text("[%d, %d, %d]".formatted(result.shipCenter.getX(), result.shipCenter.getY(), result.shipCenter.getZ()), NamedTextColor.AQUA);
+
+                        Component distText = Component.text(" (%.0f格)".formatted(result.distance), NamedTextColor.GRAY);
+
+                        sendMessage(cityHeader.append(posText).append(distText), null);
+
+                        sendMessage(Component.text("      ✅ 含有末地船", NamedTextColor.LIGHT_PURPLE), null);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            elytrafinding = false;
+            buffer.putInt(0x40000, 0);
+        }
+
+    }
+
+    public List<Pair<BlockPos, Holder<StructureStart>>> findMapStructures(final ServerLevel level, final HolderSet<Structure> wantedStructures, final BlockPos pos, final int maxSearchRadius, final boolean createReference) {
+        if (SharedConstants.DEBUG_DISABLE_FEATURES) {
+            return new ArrayList<>();
+        } else {
+            ChunkGeneratorStructureState generatorState = level.getChunkSource().getGeneratorState();
+            Map<StructurePlacement, Set<Holder<Structure>>> placementScans = new Object2ObjectArrayMap();
+
+            for (Holder<Structure> structure : wantedStructures) {
+                for (StructurePlacement placement : generatorState.getPlacementsForStructure(structure)) {
+                    ((Set) placementScans.computeIfAbsent(placement, (p) -> new ObjectArraySet())).add(structure);
+                }
+            }
+
+            if (placementScans.isEmpty()) {
+                return new ArrayList<>();
+            } else {
+                List<Pair<BlockPos, Holder<StructureStart>>> allStructures = new ArrayList<>();
+                StructureManager structureManager = level.structureManager();
+                List<Map.Entry<StructurePlacement, Set<Holder<Structure>>>> randomSpreadEntries = new ArrayList(placementScans.size());
+
+                for (Map.Entry<StructurePlacement, Set<Holder<Structure>>> entry : placementScans.entrySet()) {
+                    StructurePlacement placement = (StructurePlacement) entry.getKey();
+                    if (placement instanceof ConcentricRingsStructurePlacement) {
+                        ConcentricRingsStructurePlacement rings = (ConcentricRingsStructurePlacement) placement;
+                        // 移除用于测距的pos参数，直接获取环状分布的所有结构
+                        List<Pair<BlockPos, Holder<StructureStart>>> generating = this.getGeneratedStructures((Set) entry.getValue(), level, structureManager, createReference, rings);
+                        allStructures.addAll(generating);
+                    } else if (placement instanceof RandomSpreadStructurePlacement) {
+                        randomSpreadEntries.add(entry);
+                    }
+                }
+
+                if (!randomSpreadEntries.isEmpty()) {
+                    int chunkOriginX = SectionPos.blockToSectionCoord(pos.getX());
+                    int chunkOriginZ = SectionPos.blockToSectionCoord(pos.getZ());
+
+                    // 完整遍历直到 maxSearchRadius，不再因为 foundSomething = true 而提前 return
+                    for (int radius = 0; radius <= maxSearchRadius; ++radius) {
+                        for (Map.Entry<StructurePlacement, Set<Holder<Structure>>> entry : randomSpreadEntries) {
+                            RandomSpreadStructurePlacement randomPlacement = (RandomSpreadStructurePlacement) entry.getKey();
+                            List<Pair<BlockPos, Holder<StructureStart>>> structurePos = getGeneratedStructures((Set) entry.getValue(), level, structureManager, chunkOriginX, chunkOriginZ, radius, createReference, generatorState.getLevelSeed(), randomPlacement);
+                            allStructures.addAll(structurePos);
+                        }
+                    }
+                }
+
+                return allStructures;
+            }
+        }
+    }
+
+    private List<Pair<BlockPos, Holder<StructureStart>>> getGeneratedStructures(final Set<Holder<Structure>> structures, final ServerLevel level, final StructureManager structureManager, final boolean createReference, final ConcentricRingsStructurePlacement rings) {
+        List<ChunkPos> positions = level.getChunkSource().getGeneratorState().getRingPositionsFor(rings);
+        if (positions == null) {
+            throw new IllegalStateException("Somehow tried to find structures for a placement that doesn't exist");
+        } else {
+            List<Pair<BlockPos, Holder<StructureStart>>> foundStructures = new ArrayList<>();
+
+            // 移除距离计算和 closestPos 判断，直接收录所有生成的结构
+            for (ChunkPos chunkPos : positions) {
+                List<Pair<BlockPos, Holder<StructureStart>>> generating = getStructureGeneratingAt(structures, level, structureManager, createReference, rings, chunkPos);
+                foundStructures.addAll(generating);
+            }
+
+            return foundStructures;
+        }
+    }
+
+    private static List<Pair<BlockPos, Holder<StructureStart>>> getGeneratedStructures(final Set<Holder<Structure>> structures, final LevelReader level, final StructureManager structureManager, final int chunkOriginX, final int chunkOriginZ, final int radius, final boolean createReference, final long seed, final RandomSpreadStructurePlacement config) {
+        int spacing = config.spacing();
+        List<Pair<BlockPos, Holder<StructureStart>>> foundStructures = new ArrayList<>();
+
+        for (int x = -radius; x <= radius; ++x) {
+            boolean xEdge = x == -radius || x == radius;
+
+            for (int z = -radius; z <= radius; ++z) {
+                boolean zEdge = z == -radius || z == radius;
+                if (xEdge || zEdge) {
+                    int sectorX = chunkOriginX + spacing * x;
+                    int sectorZ = chunkOriginZ + spacing * z;
+                    ChunkPos chunkTarget = config.getPotentialStructureChunk(seed, sectorX, sectorZ);
+                    List<Pair<BlockPos, Holder<StructureStart>>> generating = getStructureGeneratingAt(structures, level, structureManager, createReference, config, chunkTarget);
+                    // 不再 return 找到的第一个结构，而是全部添加到列表
+                    foundStructures.addAll(generating);
+                }
+            }
+        }
+
+        return foundStructures;
+    }
+
+    private static List<Pair<BlockPos, Holder<StructureStart>>> getStructureGeneratingAt(final Set<Holder<Structure>> structures, final LevelReader level, final StructureManager structureManager, final boolean createReference, final StructurePlacement config, final ChunkPos chunkTarget) {
+        List<Pair<BlockPos, Holder<StructureStart>>> foundStructures = new ArrayList<>();
+
+        for (Holder<Structure> structure : structures) {
+            StructureCheckResult fastCheckResult = structureManager.checkStructurePresence(chunkTarget, (Structure) structure.value(), config, createReference);
+            if (fastCheckResult != StructureCheckResult.START_NOT_PRESENT) {
+
+                ChunkAccess chunk = level.getChunk(chunkTarget.x(), chunkTarget.z(), ChunkStatus.STRUCTURE_STARTS);
+                StructureStart start = structureManager.getStartForStructure(SectionPos.bottomOf(chunk), (Structure) structure.value(), chunk);
+                if (start != null && start.isValid() && (!createReference || tryAddReference(structureManager, start))) {
+                    foundStructures.add(Pair.of(config.getLocatePos(start.getChunkPos()), Holder.direct(start)));
+                }
+            }
+        }
+
+        return foundStructures;
+    }
+
+    private static boolean tryAddReference(final StructureManager manager, final StructureStart start) {
+        if (start.canBeReferenced()) {
+            manager.addReference(start);
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    private CompletableFuture<List<ChunkPos>> predictEndCitiesAsync(ServerLevel level, ChunkPos center, int chunkRadius) {
+        return CompletableFuture.supplyAsync(() -> {
+            List<ChunkPos> foundChunks = new ArrayList<>();
+
+            ChunkGenerator generator = level.getChunkSource().getGenerator();
+            RandomState randomState = level.getChunkSource().randomState();
+            long seed = level.getSeed();
+
+            var structureSetRegistry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE_SET);
+            var endCitySetHolder = structureSetRegistry.get(BuiltinStructureSets.END_CITIES);
+
+            if (endCitySetHolder.isPresent()) {
+                StructureSet structureSet = endCitySetHolder.get().value();
+
+                // 2. 获取该结构集的 Placement 规则
+                StructurePlacement placement = structureSet.placement();
+
+                int minX = center.x() - chunkRadius;
+                int maxX = center.x() + chunkRadius;
+                int minZ = center.z() - chunkRadius;
+                int maxZ = center.z() + chunkRadius;
+
+                // 纯数学遍历计算，不触发任何世界加载
+                for (int cx = minX; cx <= maxX; cx++) {
+                    for (int cz = minZ; cz <= maxZ; cz++) {
+                        // 判断当前区块坐标是否满足结构的数学生成分布要求
+                        ChunkGeneratorStructureState structureState = level.getChunkSource().getGeneratorState();
+                        if (placement.isStructureChunk(structureState, cx, cz)) {
+                            foundChunks.add(new ChunkPos(cx, cz));
+                        }
+                    }
+                }
+            }
+
+            return foundChunks;
+        });
+    }
 
     private void chestInspect(MinecraftServer server) {
         int x = buffer.getInt(0x0);
@@ -164,6 +509,8 @@ public class ExampleMod implements ModInitializer {
         } else {
             return;
         }
+
+        if (level == null) return;
 
         BlockPos pos = new BlockPos(x, y, z);
 
@@ -470,21 +817,21 @@ public class ExampleMod implements ModInitializer {
         }
 
         // 1. 将 BlockPos 按 ChunkPos 进行分组（去重区块）
-        Map<BlockPos, List<BlockPos>> chunkToBlocksMap = new HashMap<>();
+        Map<ChunkPos, List<BlockPos>> chunkToBlocksMap = new HashMap<>();
         for (BlockPos pos : blocks) {
             int chunkX = pos.getX() >> 4;
             int chunkZ = pos.getZ() >> 4;
-            BlockPos chunkPos = new BlockPos(chunkX, 0, chunkZ);
+            ChunkPos chunkPos = new ChunkPos(chunkX, chunkZ);
             chunkToBlocksMap.computeIfAbsent(chunkPos, k -> new ArrayList<>()).add(pos);
         }
 
         List<CompletableFuture<?>> chunkFutures = new ArrayList<>();
 
         // 2. 遍历所有需要的区块，只对未加载的区块发起 1 次加载请求
-        for (BlockPos chunkPos : chunkToBlocksMap.keySet()) {
-            if (!level.hasChunk(chunkPos.getX(), chunkPos.getZ())) {
+        for (ChunkPos chunkPos : chunkToBlocksMap.keySet()) {
+            if (!level.hasChunk(chunkPos.x(), chunkPos.z())) {
                 // 异步请求加载区块
-                var future = level.getChunkSource().getChunkFuture(chunkPos.getX(), chunkPos.getZ(), ChunkStatus.FULL, true);
+                var future = level.getChunkSource().getChunkFuture(chunkPos.x(), chunkPos.z(), ChunkStatus.FULL, true);
                 chunkFutures.add(future);
             }
         }
@@ -531,7 +878,7 @@ public class ExampleMod implements ModInitializer {
             }
 
             chunkResult.ifSuccess(chunk -> {
-                BlockEntity be =  chunk.getBlockEntity(pos);
+                BlockEntity be = chunk.getBlockEntity(pos);
                 callback.accept(be);
             });
 
@@ -548,6 +895,7 @@ public class ExampleMod implements ModInitializer {
 
         chestInspect(server);
         playerInspect(server);
+        findElytra(server);
     }
 
 }
