@@ -267,7 +267,7 @@ public class ExampleMod implements ModInitializer {
                 boolean hasShipPiece = false;
                 BlockPos shipPieceCenter = null;
 
-                for (var piece : res.getSecond().value().getPieces()) {
+                for (var piece : res.getSecond().getPieces()) {
                     CompoundTag tag = piece.createTag(context);
                     String templateName = tag.getString("Template").orElse("NULL");
 
@@ -326,7 +326,7 @@ public class ExampleMod implements ModInitializer {
 
     }
 
-    public List<Pair<BlockPos, Holder<StructureStart>>> findMapStructures(final ServerLevel level, final HolderSet<Structure> wantedStructures, final BlockPos pos, final int maxSearchRadius, final boolean createReference) {
+    public List<Pair<BlockPos, StructureStart>> findMapStructures(final ServerLevel level, final HolderSet<Structure> wantedStructures, final BlockPos pos, final int maxSearchRadius, final boolean createReference) {
         if (SharedConstants.DEBUG_DISABLE_FEATURES) {
             return new ArrayList<>();
         } else {
@@ -342,7 +342,7 @@ public class ExampleMod implements ModInitializer {
             if (placementScans.isEmpty()) {
                 return new ArrayList<>();
             } else {
-                List<Pair<BlockPos, Holder<StructureStart>>> allStructures = new ArrayList<>();
+                List<Pair<BlockPos, StructureStart>> allStructures = new ArrayList<>();
                 StructureManager structureManager = level.structureManager();
                 List<Map.Entry<StructurePlacement, Set<Holder<Structure>>>> randomSpreadEntries = new ArrayList(placementScans.size());
 
@@ -351,7 +351,7 @@ public class ExampleMod implements ModInitializer {
                     if (placement instanceof ConcentricRingsStructurePlacement) {
                         ConcentricRingsStructurePlacement rings = (ConcentricRingsStructurePlacement) placement;
                         // 移除用于测距的pos参数，直接获取环状分布的所有结构
-                        List<Pair<BlockPos, Holder<StructureStart>>> generating = this.getGeneratedStructures((Set) entry.getValue(), level, structureManager, createReference, rings);
+                        List<Pair<BlockPos, StructureStart>> generating = this.getGeneratedStructures((Set) entry.getValue(), level, structureManager, createReference, rings);
                         allStructures.addAll(generating);
                     } else if (placement instanceof RandomSpreadStructurePlacement) {
                         randomSpreadEntries.add(entry);
@@ -366,7 +366,7 @@ public class ExampleMod implements ModInitializer {
                     for (int radius = 0; radius <= maxSearchRadius; ++radius) {
                         for (Map.Entry<StructurePlacement, Set<Holder<Structure>>> entry : randomSpreadEntries) {
                             RandomSpreadStructurePlacement randomPlacement = (RandomSpreadStructurePlacement) entry.getKey();
-                            List<Pair<BlockPos, Holder<StructureStart>>> structurePos = getGeneratedStructures((Set) entry.getValue(), level, structureManager, chunkOriginX, chunkOriginZ, radius, createReference, generatorState.getLevelSeed(), randomPlacement);
+                            List<Pair<BlockPos, StructureStart>> structurePos = getGeneratedStructures((Set) entry.getValue(), level, structureManager, chunkOriginX, chunkOriginZ, radius, createReference, generatorState.getLevelSeed(), randomPlacement);
                             allStructures.addAll(structurePos);
                         }
                     }
@@ -377,16 +377,16 @@ public class ExampleMod implements ModInitializer {
         }
     }
 
-    private List<Pair<BlockPos, Holder<StructureStart>>> getGeneratedStructures(final Set<Holder<Structure>> structures, final ServerLevel level, final StructureManager structureManager, final boolean createReference, final ConcentricRingsStructurePlacement rings) {
+    private List<Pair<BlockPos, StructureStart>> getGeneratedStructures(final Set<Holder<Structure>> structures, final ServerLevel level, final StructureManager structureManager, final boolean createReference, final ConcentricRingsStructurePlacement rings) {
         List<ChunkPos> positions = level.getChunkSource().getGeneratorState().getRingPositionsFor(rings);
         if (positions == null) {
             throw new IllegalStateException("Somehow tried to find structures for a placement that doesn't exist");
         } else {
-            List<Pair<BlockPos, Holder<StructureStart>>> foundStructures = new ArrayList<>();
+            List<Pair<BlockPos, StructureStart>> foundStructures = new ArrayList<>();
 
             // 移除距离计算和 closestPos 判断，直接收录所有生成的结构
             for (ChunkPos chunkPos : positions) {
-                List<Pair<BlockPos, Holder<StructureStart>>> generating = getStructureGeneratingAt(structures, level, structureManager, createReference, rings, chunkPos);
+                List<Pair<BlockPos, StructureStart>> generating = getStructureGeneratingAt(structures, level, structureManager, createReference, rings, chunkPos);
                 foundStructures.addAll(generating);
             }
 
@@ -394,9 +394,9 @@ public class ExampleMod implements ModInitializer {
         }
     }
 
-    private static List<Pair<BlockPos, Holder<StructureStart>>> getGeneratedStructures(final Set<Holder<Structure>> structures, final LevelReader level, final StructureManager structureManager, final int chunkOriginX, final int chunkOriginZ, final int radius, final boolean createReference, final long seed, final RandomSpreadStructurePlacement config) {
+    private static List<Pair<BlockPos, StructureStart>> getGeneratedStructures(final Set<Holder<Structure>> structures, final LevelReader level, final StructureManager structureManager, final int chunkOriginX, final int chunkOriginZ, final int radius, final boolean createReference, final long seed, final RandomSpreadStructurePlacement config) {
         int spacing = config.spacing();
-        List<Pair<BlockPos, Holder<StructureStart>>> foundStructures = new ArrayList<>();
+        List<Pair<BlockPos, StructureStart>> foundStructures = new ArrayList<>();
 
         for (int x = -radius; x <= radius; ++x) {
             boolean xEdge = x == -radius || x == radius;
@@ -407,7 +407,7 @@ public class ExampleMod implements ModInitializer {
                     int sectorX = chunkOriginX + spacing * x;
                     int sectorZ = chunkOriginZ + spacing * z;
                     ChunkPos chunkTarget = config.getPotentialStructureChunk(seed, sectorX, sectorZ);
-                    List<Pair<BlockPos, Holder<StructureStart>>> generating = getStructureGeneratingAt(structures, level, structureManager, createReference, config, chunkTarget);
+                    List<Pair<BlockPos, StructureStart>> generating = getStructureGeneratingAt(structures, level, structureManager, createReference, config, chunkTarget);
                     // 不再 return 找到的第一个结构，而是全部添加到列表
                     foundStructures.addAll(generating);
                 }
@@ -417,8 +417,8 @@ public class ExampleMod implements ModInitializer {
         return foundStructures;
     }
 
-    private static List<Pair<BlockPos, Holder<StructureStart>>> getStructureGeneratingAt(final Set<Holder<Structure>> structures, final LevelReader level, final StructureManager structureManager, final boolean createReference, final StructurePlacement config, final ChunkPos chunkTarget) {
-        List<Pair<BlockPos, Holder<StructureStart>>> foundStructures = new ArrayList<>();
+    private static List<Pair<BlockPos, StructureStart>> getStructureGeneratingAt(final Set<Holder<Structure>> structures, final LevelReader level, final StructureManager structureManager, final boolean createReference, final StructurePlacement config, final ChunkPos chunkTarget) {
+        List<Pair<BlockPos, StructureStart>> foundStructures = new ArrayList<>();
 
         for (Holder<Structure> structure : structures) {
             StructureCheckResult fastCheckResult = structureManager.checkStructurePresence(chunkTarget, (Structure) structure.value(), config, createReference);
@@ -427,7 +427,7 @@ public class ExampleMod implements ModInitializer {
                 ChunkAccess chunk = level.getChunk(chunkTarget.x(), chunkTarget.z(), ChunkStatus.STRUCTURE_STARTS);
                 StructureStart start = structureManager.getStartForStructure(SectionPos.bottomOf(chunk), (Structure) structure.value(), chunk);
                 if (start != null && start.isValid() && (!createReference || tryAddReference(structureManager, start))) {
-                    foundStructures.add(Pair.of(config.getLocatePos(start.getChunkPos()), Holder.direct(start)));
+                    foundStructures.add(Pair.of(config.getLocatePos(start.getChunkPos()), start));
                 }
             }
         }
