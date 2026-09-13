@@ -530,13 +530,12 @@ public class ExampleMod implements ModInitializer {
                 return;
             }
 
-            level.getServer().execute(() -> {
-                // 加载成功，安全获取 BlockEntity
-                BlockEntity be = level.getBlockEntity(pos);
+            chunkResult.ifSuccess(chunk -> {
+                BlockEntity be =  chunk.getBlockEntity(pos);
                 callback.accept(be);
             });
 
-        });
+        }, level.getServer());
     }
 
     private CompletableFuture<BlockEntity> getBlockEntityAsync(ServerLevel level, BlockPos pos) {
